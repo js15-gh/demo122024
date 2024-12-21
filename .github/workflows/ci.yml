@@ -36,16 +36,22 @@ jobs:
     environment: staging
     if: github.ref == 'refs/heads/main'
     
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    
     steps:
     - uses: actions/checkout@v3
     
     - name: Google Auth
       id: auth
-      uses: google-github-actions/auth@v0
+      uses: 'google-github-actions/auth@v1'
       with:
-        token_format: 'access_token'
-        workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
-        service_account: ${{ secrets.SERVICE_ACCOUNT_EMAIL }}
+        workload_identity_provider: '${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}'
+        service_account: 'github-actions@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
+
+    - name: 'Set up Cloud SDK'
+      uses: 'google-github-actions/setup-gcloud@v1'
     
     - name: Docker Auth
       run: |
@@ -57,6 +63,7 @@ jobs:
         docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/demo-app/api:${{ github.sha }}
     
     - name: Deploy to Cloud Run
+      id: deploy
       run: |
         gcloud run deploy demo-app-staging \
           --image ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/demo-app/api:${{ github.sha }} \
@@ -78,16 +85,22 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: production
     
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    
     steps:
     - uses: actions/checkout@v3
     
     - name: Google Auth
       id: auth
-      uses: google-github-actions/auth@v0
+      uses: 'google-github-actions/auth@v1'
       with:
-        token_format: 'access_token'
-        workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
-        service_account: ${{ secrets.SERVICE_ACCOUNT_EMAIL }}
+        workload_identity_provider: '${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}'
+        service_account: 'github-actions@${{ env.PROJECT_ID }}.iam.gserviceaccount.com'
+
+    - name: 'Set up Cloud SDK'
+      uses: 'google-github-actions/setup-gcloud@v1'
     
     - name: Docker Auth
       run: |
