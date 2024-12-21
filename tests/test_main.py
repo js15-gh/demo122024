@@ -21,12 +21,12 @@ def test_create_item():
         "name": "Test Item",
         "description": "This is a test item"
     }
-    response = client.post("/items/", json=test_item)
+    response = client.post("/items", json=test_item)
     assert response.status_code == 200
     assert response.json()["name"] == test_item["name"]
     assert response.json()["description"] == test_item["description"]
 
 def test_get_items():
-    response = client.get("/items/")
+    response = client.get("/items")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
