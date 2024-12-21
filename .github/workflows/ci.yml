@@ -25,78 +25,52 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    
+        
     - name: Run tests
       run: |
-        pytest tests/
+        python -m pytest tests/
 
   deploy-staging:
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     environment: staging
-    
-    permissions:
-      contents: 'read'
-      id-token: 'write'
-    
-    outputs:
-      staging_status: ${{ steps.deploy-staging.outputs.status }}
-      image_tag: ${{ steps.build.outputs.image_tag }}
+    if: github.ref == 'refs/heads/main'
     
     steps:
     - uses: actions/checkout@v3
-
-    - id: 'auth'
-      name: 'Authenticate to Google Cloud'
-      uses: 'google-github-actions/auth@v1'
+    
+    - name: Google Auth
+      id: auth
+      uses: google-github-actions/auth@v0
       with:
-        workload_identity_provider: '${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}'
-        service_account: 'github-actions@demo122024.iam.gserviceaccount.com'
-
-    - name: 'Set up Cloud SDK'
-      uses: 'google-github-actions/setup-gcloud@v1'
-
-    - name: Configure Docker
+        token_format: 'access_token'
+        workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+        service_account: ${{ secrets.SERVICE_ACCOUNT_EMAIL }}
+    
+    - name: Docker Auth
       run: |
-        gcloud auth configure-docker
-
-    - name: Build and Push
-      id: build
+        gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+    
+    - name: Build and Push Container
       run: |
-        IMAGE_TAG="${{ github.sha }}"
-        docker build -t gcr.io/$PROJECT_ID/demo-app:$IMAGE_TAG .
-        docker push gcr.io/$PROJECT_ID/demo-app:$IMAGE_TAG
-        echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-    - name: Deploy to Staging
-      id: deploy-staging
+        docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/demo-app/api:${{ github.sha }} .
+        docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/demo-app/api:${{ github.sha }}
+    
+    - name: Deploy to Cloud Run
       run: |
-        echo "Deploying to staging environment..."
-        if gcloud run deploy demo-service-staging \
-          --image gcr.io/$PROJECT_ID/demo-app:${{ github.sha }} \
+        gcloud run deploy demo-app-staging \
+          --image ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/demo-app/api:${{ github.sha }} \
+          --region ${{ env.GCP_REGION }} \
           --platform managed \
-          --region $GCP_REGION \
-          --allow-unauthenticated; then
-          echo "status=success" >> $GITHUB_OUTPUT
-        else
-          echo "status=failure" >> $GITHUB_OUTPUT
-          exit 1
-        fi
+          --allow-unauthenticated
 
-    - name: Test Staging Deployment
-      id: test-staging
+    - name: Run Integration Tests in Staging
+      env:
+        API_URL: ${{ steps.deploy.outputs.url }}
       run: |
-        STAGING_URL=$(gcloud run services describe demo-service-staging --platform managed --region $GCP_REGION --format 'value(status.url)')
-        # Wait for service to be ready
-        sleep 30
-        # Test the endpoint
-        if curl -s -f -o /dev/null "$STAGING_URL/health"; then
-          echo "Staging deployment health check passed"
-        else
-          echo "Staging deployment health check failed"
-          exit 1
-        fi
+        python -m pip install -r requirements.txt
+        export TEST_ENV=staging
+        python -m pytest tests/integration/
 
   deploy-production:
     needs: deploy-staging
@@ -104,67 +78,55 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: production
     
-    permissions:
-      contents: 'read'
-      id-token: 'write'
-    
     steps:
     - uses: actions/checkout@v3
-
-    - id: 'auth'
-      name: 'Authenticate to Google Cloud'
-      uses: 'google-github-actions/auth@v1'
+    
+    - name: Google Auth
+      id: auth
+      uses: google-github-actions/auth@v0
       with:
-        workload_identity_provider: '${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}'
-        service_account: 'github-actions@demo122024.iam.gserviceaccount.com'
-
-    - name: 'Set up Cloud SDK'
-      uses: 'google-github-actions/setup-gcloud@v1'
-
-    - name: Get Previous Production Image
-      id: get-prev-image
+        token_format: 'access_token'
+        workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+        service_account: ${{ secrets.SERVICE_ACCOUNT_EMAIL }}
+    
+    - name: Docker Auth
       run: |
-        PREV_IMAGE=$(gcloud run services describe demo-service-prod --platform managed --region $GCP_REGION --format 'value(spec.template.spec.containers[0].image)')
-        echo "prev_image=$PREV_IMAGE" >> $GITHUB_OUTPUT
-
-    - name: Deploy to Production
-      id: deploy-prod
+        gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+    
+    - name: Deploy to Cloud Run
+      id: deploy
       run: |
-        echo "Deploying to production environment..."
-        if gcloud run deploy demo-service-prod \
-          --image gcr.io/$PROJECT_ID/demo-app:${{ needs.deploy-staging.outputs.image_tag }} \
+        gcloud run deploy demo-app-prod \
+          --image ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/demo-app/api:${{ github.sha }} \
+          --region ${{ env.GCP_REGION }} \
           --platform managed \
-          --region $GCP_REGION \
-          --allow-unauthenticated; then
-          echo "Production deployment successful"
-        else
-          echo "Production deployment failed, rolling back..."
-          gcloud run deploy demo-service-prod \
-            --image ${{ steps.get-prev-image.outputs.prev_image }} \
-            --platform managed \
-            --region $GCP_REGION \
-            --allow-unauthenticated
-          echo "::error::Production deployment failed. Rolled back to previous version."
-          exit 1
-        fi
-
-    - name: Test Production Deployment
-      id: test-prod
+          --allow-unauthenticated
+    
+    - name: Health Check
       run: |
-        PROD_URL=$(gcloud run services describe demo-service-prod --platform managed --region $GCP_REGION --format 'value(status.url)')
-        # Wait for service to be ready
-        sleep 30
-        # Test the endpoint
-        if curl -s -f -o /dev/null "$PROD_URL/health"; then
-          echo "Production deployment health check passed"
-        else
-          echo "Production deployment health check failed"
-          # Trigger rollback
-          gcloud run deploy demo-service-prod \
-            --image ${{ steps.get-prev-image.outputs.prev_image }} \
-            --platform managed \
-            --region $GCP_REGION \
-            --allow-unauthenticated
-          echo "::error::Production health check failed. Rolled back to previous version."
-          exit 1
+        DEPLOY_URL=$(gcloud run services describe demo-app-prod --region ${{ env.GCP_REGION }} --format 'value(status.url)')
+        MAX_RETRIES=5
+        COUNT=0
+        echo "Checking health endpoint at $DEPLOY_URL/health"
+        while [ $COUNT -lt $MAX_RETRIES ]; do
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" $DEPLOY_URL/health)
+          if [ $HTTP_STATUS == "200" ]; then
+            echo "Health check passed!"
+            exit 0
+          fi
+          echo "Attempt $COUNT: Health check failed with status $HTTP_STATUS. Retrying..."
+          COUNT=$((COUNT + 1))
+          sleep 10
+        done
+        echo "Health check failed after $MAX_RETRIES attempts"
+        exit 1
+
+    - name: Rollback on Failure
+      if: failure()
+      run: |
+        # Get the previous successful version
+        PREV_VERSION=$(gcloud run revisions list --service demo-app-prod --region ${{ env.GCP_REGION }} --format="get(metadata.name)" --limit=2 | grep -v ${{ github.sha }} | head -1)
+        if [ ! -z "$PREV_VERSION" ]; then
+          echo "Rolling back to version $PREV_VERSION"
+          gcloud run services update-traffic demo-app-prod --region ${{ env.GCP_REGION }} --to-revisions=$PREV_VERSION=100
         fi
