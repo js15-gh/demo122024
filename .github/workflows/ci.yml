@@ -70,6 +70,7 @@ jobs:
           --region ${{ env.GCP_REGION }} \
           --platform managed \
           --allow-unauthenticated
+        echo "::set-output name=url::$(gcloud run services describe demo-app-staging --region ${{ env.GCP_REGION }} --format='get(status.url)')"
 
     - name: Run Integration Tests in Staging
       env:
